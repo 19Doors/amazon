@@ -15,6 +15,7 @@ import {
   SessionProvider,
   RoomAudioRenderer,
   useChat,
+  useAgent,
 } from "@livekit/components-react";
 
 interface AttachedFile {
@@ -42,6 +43,7 @@ const tokenSource = TokenSource.endpoint("/api/token");
 
 function ChatInner({ session }: { session: ReturnType<typeof useSession> }) {
   const { send } = useChat();
+  const agent = useAgent();
   const room = session.room;
 
   const [value, setValue] = useState("");
@@ -322,6 +324,7 @@ function ChatInner({ session }: { session: ReturnType<typeof useSession> }) {
             isRecording={isRecording}
             onMicDown={handleMicDown}
             onMicRelease={handleMicRelease}
+            agentState={agent.state}
           />
         ) : (
           <>
