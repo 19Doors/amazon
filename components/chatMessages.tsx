@@ -1,4 +1,3 @@
-// components/chat-messages.tsx
 "use client";
 
 import { useEffect, useRef } from "react";
@@ -24,9 +23,11 @@ interface BaseMessage {
   timestamp: Date;
 }
 
-interface TextMessage extends BaseMessage {
+export interface TextMessage extends BaseMessage {
   type: "text";
   content: string;
+  segmentId?: string; // ← stable LiveKit segment ID for upsert
+  streaming?: boolean; // ← true while agent is still speaking
 }
 
 interface DocumentMessage extends BaseMessage {
@@ -73,7 +74,7 @@ function getFileIcon(name: string) {
   return <File className="w-4 h-4 text-muted-foreground" />;
 }
 
-// ─── Fake waveform bars ───────────────────────────────────────────────────────
+// ─── Waveform ─────────────────────────────────────────────────────────────────
 
 function Waveform({ isUser }: { isUser: boolean }) {
   const bars = [3, 5, 8, 6, 10, 7, 4, 9, 6, 5, 8, 4, 7, 5, 3];
@@ -90,7 +91,15 @@ function Waveform({ isUser }: { isUser: boolean }) {
   );
 }
 
-// ─── Per-type renderers ───────────────────────────────────────────────────────
+// ─── Streaming cursor ─────────────────────────────────────────────────────────
+
+function StreamingCursor() {
+  return (
+    <span className="inline-block w-[2px] h-[14px] bg-current ml-[2px] align-middle rounded-sm animate-pulse" />
+  );
+}
+
+// ─── Renderers ────────────────────────────────────────────────────────────────
 
 function TextBubble({ msg }: { msg: TextMessage }) {
   const isUser = msg.role === "user";
@@ -107,10 +116,13 @@ function TextBubble({ msg }: { msg: TextMessage }) {
           }`}
       >
         {msg.content}
+        {msg.streaming && <StreamingCursor />}
       </div>
-      <span className="text-[10px] text-muted-foreground px-1">
-        {formatTime(msg.timestamp)}
-      </span>
+      {!msg.streaming && (
+        <span className="text-[10px] text-muted-foreground px-1">
+          {formatTime(msg.timestamp)}
+        </span>
+      )}
     </div>
   );
 }
@@ -129,7 +141,6 @@ function DocumentBubble({ msg }: { msg: DocumentMessage }) {
               : "bg-card border-border rounded-bl-sm"
           }`}
       >
-        {/* Files */}
         <div className="flex flex-col gap-1.5">
           {msg.files.map((f, i) => (
             <div
@@ -148,8 +159,6 @@ function DocumentBubble({ msg }: { msg: DocumentMessage }) {
             </div>
           ))}
         </div>
-
-        {/* Optional caption */}
         {msg.caption && (
           <p className="text-sm text-foreground leading-relaxed px-0.5">
             {msg.caption}
@@ -177,37 +186,37 @@ function VoiceBubble({ msg }: { msg: VoiceMessage }) {
               : "bg-card border-border rounded-bl-sm"
           }`}
       >
-        {/* Player row */}
         <div className="flex items-center gap-3">
           <button
-            className={`shrink-0 w-8 h-8 rounded-full flex items-center justify-center transition-colors
-              ${
-                isUser
-                  ? "bg-primary-foreground/20 hover:bg-primary-foreground/30"
-                  : "bg-primary/10 hover:bg-primary/20"
-              }`}
+            className={`shrink-0 w-8 h-8 rounded-full flex items-center justify-center
+              ${isUser ? "bg-primary-foreground/20 hover:bg-primary-foreground/30" : "bg-primary/10 hover:bg-primary/20"}`}
           >
             <Play
               className={`w-3.5 h-3.5 ml-0.5 ${isUser ? "text-primary-foreground" : "text-primary"}`}
             />
           </button>
-
           <Waveform isUser={isUser} />
-
           <span
             className={`text-[11px] font-medium shrink-0 ${isUser ? "text-primary-foreground/80" : "text-muted-foreground"}`}
           >
             {formatDuration(msg.durationSeconds)}
           </span>
         </div>
-
-        {/* Transcript */}
         {msg.transcript && (
           <p
-            className={`text-xs leading-relaxed italic border-t pt-2 
+            className={`text-xs leading-relaxed italic border-t pt-2
             ${isUser ? "border-primary-foreground/20 text-primary-foreground/80" : "border-border text-muted-foreground"}`}
           >
             "{msg.transcript}"
+          </p>
+        )}
+        {/* Show a pulsing "transcribing…" while no transcript yet on a final voice message */}
+        {!msg.transcript && (
+          <p
+            className={`text-[10px] italic animate-pulse
+            ${isUser ? "text-primary-foreground/50" : "text-muted-foreground"}`}
+          >
+            Transcribing…
           </p>
         )}
       </div>
@@ -217,8 +226,6 @@ function VoiceBubble({ msg }: { msg: VoiceMessage }) {
     </div>
   );
 }
-
-// ─── Thinking indicator ───────────────────────────────────────────────────────
 
 function ThinkingBubble() {
   return (
@@ -234,8 +241,6 @@ function ThinkingBubble() {
   );
 }
 
-// ─── Avatar ───────────────────────────────────────────────────────────────────
-
 function Avatar({ role }: { role: MessageRole }) {
   return (
     <div className="shrink-0 w-7 h-7 rounded-full border border-border flex items-center justify-center mt-0.5 bg-muted">
@@ -248,7 +253,7 @@ function Avatar({ role }: { role: MessageRole }) {
   );
 }
 
-// ─── Main Component ───────────────────────────────────────────────────────────
+// ─── Main ─────────────────────────────────────────────────────────────────────
 
 export default function ChatMessages({
   messages,
@@ -278,21 +283,17 @@ export default function ChatMessages({
 
   return (
     <div className="flex-1 overflow-y-auto px-4 py-6 space-y-4">
-      {messages.map((msg) => {
-        const isUser = msg.role === "user";
-
-        return (
-          <div
-            key={msg.id}
-            className={`flex items-start gap-2.5 ${isUser ? "flex-row-reverse" : "flex-row"}`}
-          >
-            <Avatar role={msg.role} />
-            {msg.type === "text" && <TextBubble msg={msg} />}
-            {msg.type === "document" && <DocumentBubble msg={msg} />}
-            {msg.type === "voice" && <VoiceBubble msg={msg} />}
-          </div>
-        );
-      })}
+      {messages.map((msg) => (
+        <div
+          key={msg.id}
+          className={`flex items-start gap-2.5 ${msg.role === "user" ? "flex-row-reverse" : "flex-row"}`}
+        >
+          <Avatar role={msg.role} />
+          {msg.type === "text" && <TextBubble msg={msg} />}
+          {msg.type === "document" && <DocumentBubble msg={msg} />}
+          {msg.type === "voice" && <VoiceBubble msg={msg} />}
+        </div>
+      ))}
 
       {isThinking && <ThinkingBubble />}
       <div ref={bottomRef} />

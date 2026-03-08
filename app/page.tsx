@@ -336,7 +336,7 @@ const Landing = () => {
             <Button
               variant="outline"
               size="sm"
-              onClick={() => router.push("/app")}
+              onClick={() => router.push("/chat")}
             >
               Launch App
             </Button>
@@ -391,7 +391,7 @@ const Landing = () => {
           >
             <Button
               size="lg"
-              onClick={() => router.push("/app")}
+              onClick={() => router.push("/chat")}
               className="group"
             >
               Get Started{" "}
@@ -684,7 +684,7 @@ const Landing = () => {
             <div className="flex flex-col sm:flex-row gap-4 justify-center">
               <Button
                 size="lg"
-                onClick={() => router.push("/app")}
+                onClick={() => router.push("/chat")}
                 className="group"
               >
                 Launch Arrow{" "}

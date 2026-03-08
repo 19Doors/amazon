@@ -2,7 +2,10 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Paperclip, Send, Mic, FileText, X } from "lucide-react";
-import ChatMessages, { ChatMessage } from "@/components/chatMessages";
+import ChatMessages, {
+  ChatMessage,
+  TextMessage,
+} from "@/components/chatMessages";
 import VoiceMode from "@/components/voiceMode";
 import { MessageSquare, Mic as MicIcon } from "lucide-react";
 
@@ -17,23 +20,29 @@ import {
 interface AttachedFile {
   id: string;
   file: File;
-  progress: number; // 0–100, null = not yet sending
+  progress: number;
   status: "pending" | "sending" | "done" | "error";
 }
 
-const BYTE_STREAM_TOPIC = "document-upload"; // must match Python agent
+const BYTE_STREAM_TOPIC = "document-upload";
 
 function formatSize(bytes: number) {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-const tokenSource = TokenSource.endpoint("http://localhost:3002/getToken");
+// const tokenSource = TokenSource.endpoint("http://localhost:3002/getToken");
+// const tokenSource = TokenSource.endpoint(
+//   "https://minh-untreed-unsensibly.ngrok-free.dev/getToken",
+// );
 
-// ─── Inner — runs INSIDE SessionProvider context ──────────────────────────────
+const tokenSource = TokenSource.endpoint("/api/token");
+
+// ─── Inner ────────────────────────────────────────────────────────────────────
+
 function ChatInner({ session }: { session: ReturnType<typeof useSession> }) {
-  // ✅ useChat reads from SessionProvider context — no room arg needed
-  const { chatMessages, send, isSending } = useChat();
+  const { send } = useChat();
+  const room = session.room;
 
   const [value, setValue] = useState("");
   const [files, setFiles] = useState<AttachedFile[]>([]);
@@ -44,6 +53,109 @@ function ChatInner({ session }: { session: ReturnType<typeof useSession> }) {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // ─── Transcription stream handler ────────────────────────────────────────
+
+  useEffect(() => {
+    if (!room) return;
+
+    room.registerTextStreamHandler(
+      "lk.transcription",
+      async (reader, participantInfo) => {
+        // Only handle transcription streams (not plain chat messages)
+        const isTranscription =
+          !!reader.info.attributes["lk.transcribed_track_id"];
+        if (!isTranscription) return;
+
+        const isFinal =
+          reader.info.attributes["lk.transcription_final"] === "true";
+        const segmentId =
+          reader.info.attributes["lk.segment_id"] || reader.info.id;
+        const isAgent =
+          participantInfo.identity !== room.localParticipant.identity;
+
+        // Collect all chunks — each invocation is one discrete segment update
+        let fullText = "";
+        for await (const chunk of reader) {
+          fullText += chunk;
+
+          if (isAgent) {
+            // Hide thinking bubble on very first agent chunk
+            setIsThinking(false);
+
+            // Upsert by segmentId — same ID = update in place, new ID = new bubble
+            setMessages((prev) => {
+              const idx = prev.findIndex(
+                (m): m is TextMessage =>
+                  m.type === "text" &&
+                  m.role === "assistant" &&
+                  m.segmentId === segmentId,
+              );
+
+              if (idx >= 0) {
+                // Update existing streaming bubble
+                const updated = [...prev];
+                updated[idx] = {
+                  ...updated[idx],
+                  content: fullText,
+                  streaming: !isFinal,
+                } as TextMessage;
+                return updated;
+              }
+
+              // Create new streaming bubble
+              return [
+                ...prev,
+                {
+                  id: segmentId,
+                  segmentId,
+                  role: "assistant",
+                  type: "text",
+                  timestamp: new Date(),
+                  content: fullText,
+                  streaming: true,
+                } as TextMessage,
+              ];
+            });
+          }
+        }
+
+        // ── Post-stream finalisation ────────────────────────────────────────
+
+        if (isAgent) {
+          // Remove streaming cursor once the stream closes
+          setMessages((prev) =>
+            prev.map((m) =>
+              (m as TextMessage).segmentId === segmentId
+                ? ({ ...m, streaming: false } as TextMessage)
+                : m,
+            ),
+          );
+        } else if (isFinal && fullText) {
+          // Patch the latest user voice bubble with its transcript
+          setMessages((prev) => {
+            const lastVoiceIdx = [...prev]
+              .reverse()
+              .findIndex((m) => m.type === "voice" && m.role === "user");
+            if (lastVoiceIdx === -1) return prev;
+            const actualIdx = prev.length - 1 - lastVoiceIdx;
+            const updated = [...prev];
+            updated[actualIdx] = {
+              ...updated[actualIdx],
+              transcript: fullText,
+            } as ChatMessage;
+            return updated;
+          });
+        }
+      },
+    );
+
+    return () => {
+      room.unregisterTextStreamHandler?.("lk.transcription");
+    };
+  }, [room]);
+
+  // ─── Input handlers ───────────────────────────────────────────────────────
 
   const handleInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setValue(e.target.value);
@@ -76,25 +188,20 @@ function ChatInner({ session }: { session: ReturnType<typeof useSession> }) {
 
   const sendFilesViaLiveKit = async (pendingFiles: AttachedFile[]) => {
     for (const { id, file } of pendingFiles) {
-      // Mark as sending
       setFiles((p) =>
         p.map((f) => (f.id === id ? { ...f, status: "sending" } : f)),
       );
-
       try {
         await session.room.localParticipant.sendFile(file, {
           mimeType: file.type || "application/octet-stream",
           topic: BYTE_STREAM_TOPIC,
-          onProgress: (progress) => {
+          onProgress: (progress) =>
             setFiles((p) =>
               p.map((f) =>
                 f.id === id ? { ...f, progress: Math.ceil(progress * 100) } : f,
               ),
-            );
-          },
+            ),
         });
-
-        // Mark done
         setFiles((p) =>
           p.map((f) =>
             f.id === id ? { ...f, status: "done", progress: 100 } : f,
@@ -114,7 +221,6 @@ function ChatInner({ session }: { session: ReturnType<typeof useSession> }) {
 
     const pendingFiles = files.filter((f) => f.status === "pending");
 
-    // Push user message to chat immediately
     const userMsg: ChatMessage =
       pendingFiles.length > 0
         ? {
@@ -138,21 +244,18 @@ function ChatInner({ session }: { session: ReturnType<typeof useSession> }) {
           };
 
     setMessages((p) => [...p, userMsg]);
-
-    // Send text message over LiveKit chat
     if (value.trim()) send(value.trim());
 
     setValue("");
     if (textareaRef.current) textareaRef.current.style.height = "auto";
 
-    // Stream files in background — chips stay visible with progress
+    // Show thinking bubble — dismissed automatically when first agent chunk arrives
+    setIsThinking(true);
+
     if (pendingFiles.length > 0) {
-      setIsThinking(true);
       await sendFilesViaLiveKit(pendingFiles);
-      // Clear done files after a short delay so user sees ✓
       setTimeout(() => {
         setFiles((p) => p.filter((f) => f.status !== "done"));
-        setIsThinking(false);
       }, 1200);
     }
   };
@@ -166,6 +269,7 @@ function ChatInner({ session }: { session: ReturnType<typeof useSession> }) {
     if (!isRecording) return;
     setIsRecording(false);
     await session.room.localParticipant.setMicrophoneEnabled(false);
+    // Push voice bubble immediately — transcript fills in via lk.transcription
     setMessages((p) => [
       ...p,
       {
@@ -173,9 +277,11 @@ function ChatInner({ session }: { session: ReturnType<typeof useSession> }) {
         role: "user",
         type: "voice",
         timestamp: new Date(),
-        durationSeconds: 7,
+        durationSeconds: 0,
+        // transcript filled in by transcription handler when STT finalises
       },
     ]);
+    setIsThinking(true);
   };
 
   const canSend = value.trim().length > 0 || files.length > 0;
@@ -183,7 +289,7 @@ function ChatInner({ session }: { session: ReturnType<typeof useSession> }) {
   return (
     <div className="w-full h-screen flex justify-center bg-background font-inter">
       <div className="w-full max-w-2xl h-full flex flex-col">
-        {/* ── Top bar with mode switch ── */}
+        {/* Mode switch */}
         <div className="flex items-center justify-end px-4 pt-4 pb-2 shrink-0">
           <div className="flex items-center gap-1 bg-muted border border-border rounded-full p-1">
             <button
@@ -211,7 +317,6 @@ function ChatInner({ session }: { session: ReturnType<typeof useSession> }) {
           </div>
         </div>
 
-        {/* ── Mode content ── */}
         {voiceMode ? (
           <VoiceMode
             isRecording={isRecording}
@@ -224,22 +329,19 @@ function ChatInner({ session }: { session: ReturnType<typeof useSession> }) {
 
             <div className="flex flex-col gap-2 px-4 pb-8">
               {/* File chips */}
-
               {files.length > 0 && (
                 <div className="flex flex-wrap gap-2 px-1">
                   {files.map(({ id, file, progress, status }) => (
                     <div
                       key={id}
-                      className={`group flex flex-col gap-1 bg-muted border rounded-lg pl-2.5 pr-1.5 pt-1.5 pb-1 max-w-[200px] transition-colors duration-150
-          ${
-            status === "error"
-              ? "border-destructive/40"
-              : status === "done"
-                ? "border-emerald-500/40"
-                : "border-border"
-          }`}
+                      className={`group flex flex-col gap-1 bg-muted border rounded-lg pl-2.5 pr-1.5 pt-1.5 pb-1 max-w-[200px] transition-colors duration-150 ${
+                        status === "error"
+                          ? "border-destructive/40"
+                          : status === "done"
+                            ? "border-emerald-500/40"
+                            : "border-border"
+                      }`}
                     >
-                      {/* Top row */}
                       <div className="flex items-center gap-2">
                         <FileText
                           className={`w-3.5 h-3.5 shrink-0 ${
@@ -264,7 +366,6 @@ function ChatInner({ session }: { session: ReturnType<typeof useSession> }) {
                                   : formatSize(file.size)}
                           </p>
                         </div>
-                        {/* Only allow removal if not mid-send */}
                         {status !== "sending" && (
                           <button
                             onClick={() =>
@@ -276,8 +377,6 @@ function ChatInner({ session }: { session: ReturnType<typeof useSession> }) {
                           </button>
                         )}
                       </div>
-
-                      {/* Progress bar — only while sending */}
                       {status === "sending" && (
                         <div className="w-full h-1 rounded-full bg-background overflow-hidden">
                           <div
@@ -290,6 +389,7 @@ function ChatInner({ session }: { session: ReturnType<typeof useSession> }) {
                   ))}
                 </div>
               )}
+
               {/* Input bar */}
               <div
                 className={`flex flex-col gap-2 rounded-xl border bg-card px-4 pt-3.5 pb-3 shadow-sm transition-all duration-200 focus-within:shadow-md hover:shadow-md ${
@@ -315,7 +415,6 @@ function ChatInner({ session }: { session: ReturnType<typeof useSession> }) {
                       : ""
                   }`}
                 />
-
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-0.5">
                     <button
@@ -334,7 +433,6 @@ function ChatInner({ session }: { session: ReturnType<typeof useSession> }) {
                       onChange={(e) => handleFiles(e.target.files)}
                     />
                   </div>
-
                   <div className="flex items-center gap-1.5">
                     <button
                       onMouseDown={handleMicDown}
@@ -351,7 +449,6 @@ function ChatInner({ session }: { session: ReturnType<typeof useSession> }) {
                     >
                       <Mic className="w-4 h-4" />
                     </button>
-
                     <button
                       onClick={handleSend}
                       disabled={!canSend}
@@ -374,7 +471,8 @@ function ChatInner({ session }: { session: ReturnType<typeof useSession> }) {
   );
 }
 
-// ─── Outer — sets up session, owns SessionProvider ────────────────────────────
+// ─── Outer ────────────────────────────────────────────────────────────────────
+
 export default function Chat() {
   const roomRef = useRef<Room>(
     new Room({
@@ -384,10 +482,7 @@ export default function Chat() {
         echoCancellation: true,
         noiseSuppression: true,
       },
-      publishDefaults: {
-        dtx: true,
-        red: true,
-      },
+      publishDefaults: { dtx: true, red: true },
     }),
   );
   const roomNameRef = useRef(
@@ -401,12 +496,10 @@ export default function Chat() {
 
   useEffect(() => {
     session.start();
-
     const onConnected = () => {
       session.room.localParticipant.setMicrophoneEnabled(false);
     };
     session.room.on(RoomEvent.Connected, onConnected);
-
     return () => {
       session.room.off(RoomEvent.Connected, onConnected);
       session.end();
@@ -414,7 +507,6 @@ export default function Chat() {
   }, []);
 
   return (
-    // ✅ SessionProvider wraps ChatInner — all hooks inside have valid context
     <SessionProvider session={session}>
       <RoomAudioRenderer />
       <ChatInner session={session} />
