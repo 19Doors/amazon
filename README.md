@@ -1,36 +1,165 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Arrow 🏹
+
+Arrow is a voice-first AI assistant for rural India. Users speak in their local language — Arrow understands, thinks, searches live data, reads documents, and speaks the answer back. No typing, no menus, no literacy barrier.
+
+Built with LiveKit, AWS, and Sarvam AI.
+
+---
+
+## What It Does
+
+- Speaks and understands 16+ Indian languages — Hindi, Tamil, Telugu, Bengali, Marathi, and more
+- Answers live questions about mandi prices, government schemes, weather, and farming
+- Reads uploaded documents — Aadhaar, PM-KISAN forms, land records, prescriptions, bank passbooks
+- Responds in the user's own language automatically
+- Keeps answers short and spoken — designed for the ear, not the screen
+
+---
+
+## Repositories
+
+| Part | Repo |
+|---|---|
+| Frontend (this repo) | `ArrowFrontend` |
+| Backend (Agent + LiveKit) | [ArrowBackend](https://github.com/19Doors/ArrowBackend) |
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| Framework | Next.js 14 (App Router) |
+| Styling | Tailwind CSS |
+| Voice (WebRTC) | LiveKit Client SDK |
+| Auth Token | LiveKit JWT via `/api/token` |
+| Hosting | AWS Amplify |
+| CI/CD | GitHub Actions → Amplify auto-deploy |
+
+---
+
+## Project Structure
+
+```
+arrow-frontend/
+├── app/
+│   ├── page.tsx               # Main voice UI
+│   ├── layout.tsx             # Root layout
+│   └── api/
+│       └── token/
+│           └── route.ts       # Mints LiveKit JWT, returns wss:// URL
+├── components/
+│   ├── VoiceRoom.tsx          # LiveKit room + mic stream
+│   └── FileUpload.tsx         # Document upload → data channel
+├── public/
+├── .env.local                 # Environment variables (never commit)
+├── next.config.ts
+└── package.json
+```
+
+---
+
+## Environment Variables
+
+Create a `.env.local` file in the root:
+
+```env
+# LiveKit
+LIVEKIT_URL=wss://your-livekit-server.nip.io
+LIVEKIT_API_KEY=your_livekit_api_key
+LIVEKIT_API_SECRET=your_livekit_api_secret
+```
+
+> Never commit `.env.local`. It is already in `.gitignore`.
+
+---
+
+## How the Token Route Works
+
+When the frontend loads, it calls `/api/token`. This server-side route:
+
+1. Receives the participant name and room name as query params
+2. Signs a **LiveKit JWT** using `LIVEKIT_API_KEY` and `LIVEKIT_API_SECRET`
+3. Returns the signed token and the `wss://` server URL to the client
+4. The client uses these to open a WebRTC room via the LiveKit SDK
+
+---
 
 ## Getting Started
 
-First, run the development server:
+### Prerequisites
+
+- Node.js 18+
+- A running LiveKit server (see [ArrowBackend](https://github.com/19Doors/ArrowBackend))
+
+### Install
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+git clone https://github.com/19Doors/ArrowFrontend
+cd ArrowFrontend
+npm install
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### Run locally
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+cp .env.local.example .env.local
+# Fill in your LiveKit credentials
+npm run dev
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+App runs at `http://localhost:3000`
 
-## Learn More
+---
 
-To learn more about Next.js, take a look at the following resources:
+## Deployment (AWS Amplify)
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+1. Push repo to GitHub
+2. Connect repo to AWS Amplify console
+3. Add environment variables in Amplify → App Settings → Environment Variables:
+   - `LIVEKIT_URL`
+   - `LIVEKIT_API_KEY`
+   - `LIVEKIT_API_SECRET`
+4. Every push to `main` triggers an automatic redeploy
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+---
 
-## Deploy on Vercel
+## How Document Upload Works
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+1. User taps the attach button and selects a file (PDF, image, Excel, CSV)
+2. File bytes are sent over the **LiveKit data channel** to the backend agent
+3. The agent's `FileProcessor` routes it to Sarvam Document Intelligence (PDF/image) or stdlib parsers (Excel/CSV)
+4. Extracted text is injected into Claude's context
+5. Arrow reads out the document in plain spoken language
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+---
+
+## Full Data Flow
+
+```
+Phone (Arrow frontend on Amplify)
+  │
+  ├── HTTPS /api/token → LiveKit JWT
+  │
+  ├── WSS → LiveKit Server (ArrowBackend EC2)
+  │     └── dispatches job to Agent worker
+  │
+  └── Agent Pipeline (ArrowBackend)
+        ├── Silero VAD → Amazon Transcribe (STT)
+        ├── Claude Haiku on AWS Bedrock (LLM)
+        │     ├── Exa MCP (live web search)
+        │     └── Sarvam Doc Intelligence (OCR)
+        └── Amazon Polly (TTS) → audio back to phone
+```
+
+---
+
+## Backend
+
+All voice pipeline logic — VAD, STT, LLM, TTS, document OCR, and web search — lives in the backend agent. See [ArrowBackend](https://github.com/19Doors/ArrowBackend) for setup instructions.
+
+---
+
+## License
+
+MIT
