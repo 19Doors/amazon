@@ -29,7 +29,7 @@ Built with LiveKit, AWS, and Sarvam AI.
 
 | Layer | Technology |
 |---|---|
-| Framework | Next.js 14 (App Router) |
+| Framework | Next.js 16 (App Router) |
 | Styling | Tailwind CSS |
 | Voice (WebRTC) | LiveKit Client SDK |
 | Auth Token | LiveKit JWT via `/api/token` |
@@ -89,7 +89,7 @@ When the frontend loads, it calls `/api/token`. This server-side route:
 
 ### Prerequisites
 
-- Node.js 18+
+- Bun
 - A running LiveKit server (see [ArrowBackend](https://github.com/19Doors/ArrowBackend))
 
 ### Install
@@ -97,7 +97,7 @@ When the frontend loads, it calls `/api/token`. This server-side route:
 ```bash
 git clone https://github.com/19Doors/ArrowFrontend
 cd ArrowFrontend
-npm install
+bun install
 ```
 
 ### Run locally
@@ -105,7 +105,7 @@ npm install
 ```bash
 cp .env.local.example .env.local
 # Fill in your LiveKit credentials
-npm run dev
+bun run dev
 ```
 
 App runs at `http://localhost:3000`
